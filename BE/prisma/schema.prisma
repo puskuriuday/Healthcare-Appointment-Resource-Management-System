@@ -1,0 +1,308 @@
+// Prisma schema (JavaScript backend) - models & enums
+// NOTE: Overlap exclusion constraints & CITEXT will be added via raw SQL migration.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role { PATIENT DOCTOR ADMIN }
+enum UserStatus { ACTIVE DISABLED }
+
+enum AppointmentStatus { PENDING CONFIRMED CHECKED_IN COMPLETED CANCELLED NO_SHOW }
+enum BedAllocStatus { RESERVED OCCUPIED RELEASED CANCELLED }
+
+enum ResourceType { BED MEDICINE EQUIPMENT }
+enum InvoiceStatus { DRAFT ISSUED PAID VOID }
+enum TransactionType { PAYMENT REFUND }
+enum PaymentMethod { CASH CARD INSURANCE }
+enum NotificationChannel { EMAIL SMS }
+enum AlertType { LOW_STOCK BED_CAPACITY }
+enum Severity { INFO WARN CRITICAL }
+
+model User {
+  id            BigInt      @id @default(autoincrement())
+  email         String      @unique
+  passwordHash  String
+  phoneE164     String?
+  role          Role
+  status        UserStatus  @default(ACTIVE)
+  createdAt     DateTime    @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime    @updatedAt      @db.Timestamptz(6)
+  lastLoginAt   DateTime?   @db.Timestamptz(6)
+
+  patientProfile PatientProfile?
+  doctorProfile  DoctorProfile?
+
+  createdAppointments Appointment[] @relation("createdBy")
+  patientAppointments Appointment[] @relation("patient")
+  doctorAppointments  Appointment[] @relation("doctor")
+
+  alertsAcknowledged Alert[]        @relation("ackBy")
+
+  RefreshTokens RefreshToken[]
+  AuditLogs     AuditLog[]          @relation("actor")
+
+  @@index([role])
+  @@index([status])
+}
+
+model PatientProfile {
+  userId           BigInt  @id
+  fullName         String
+  dob              DateTime? @db.Date
+  gender           String?
+  addressLine      String?
+  insuranceNumber  String?
+  allergies        String?
+  emergencyContact String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model DoctorProfile {
+  userId      BigInt @id
+  fullName    String
+  specialty   String
+  licenseNo   String?
+  roomNumber  String?
+  bio         String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  availabilities DoctorAvailability[]
+  timeOff        DoctorTimeOff[]
+}
+
+model DoctorAvailability {
+  id            BigInt  @id @default(autoincrement())
+  doctorId      BigInt
+  dayOfWeek     Int
+  startMinutes  Int
+  endMinutes    Int
+  slotMinutes   Int      @default(15)
+  timezone      String
+  isActive      Boolean  @default(true)
+
+  doctor User @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  @@index([doctorId, dayOfWeek])
+}
+
+model DoctorTimeOff {
+  id        BigInt   @id @default(autoincrement())
+  doctorId  BigInt
+  startAt   DateTime @db.Timestamptz(6)
+  endAt     DateTime @db.Timestamptz(6)
+  reason    String?
+
+  doctor User @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  @@index([doctorId, startAt])
+  @@index([doctorId, endAt])
+}
+
+model Appointment {
+  id         BigInt            @id @default(autoincrement())
+  patientId  BigInt
+  doctorId   BigInt
+  startAt    DateTime          @db.Timestamptz(6)
+  endAt      DateTime          @db.Timestamptz(6)
+  status     AppointmentStatus
+  reason     String?
+  location   String?
+
+  createdById BigInt
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt      @db.Timestamptz(6)
+
+  patient  User @relation("patient",  fields: [patientId],  references: [id])
+  doctor   User @relation("doctor",   fields: [doctorId],   references: [id])
+  createdBy User @relation("createdBy", fields: [createdById], references: [id])
+
+  BedAllocations BedAllocation[]
+
+  @@index([doctorId, startAt])
+  @@index([patientId, startAt])
+  @@index([status])
+}
+
+model Resource {
+  id      BigInt       @id @default(autoincrement())
+  rtype   ResourceType
+  code    String?      @unique
+  name    String
+  status  String       @default("ACTIVE")
+  meta    Json         @db.JsonB
+
+  medicine Medicine?
+  beds     BedAllocation[]
+
+  @@index([rtype, status])
+}
+
+model Medicine {
+  resourceId   BigInt @id
+  genericName  String
+  brandName    String?
+  strength     String?
+  form         String?
+
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  batches  MedicineBatch[]
+}
+
+model MedicineBatch {
+  id              BigInt   @id @default(autoincrement())
+  medicineResId   BigInt
+  batchNo         String?
+  expiryDate      DateTime @db.Date
+  qtyOnHand       Int      @default(0)
+  reorderLevel    Int      @default(0)
+
+  medicine Medicine @relation(fields: [medicineResId], references: [resourceId], onDelete: Cascade)
+  moves    InventoryMove[]
+
+  @@index([medicineResId])
+  @@index([expiryDate])
+  @@index([qtyOnHand, reorderLevel])
+}
+
+model InventoryMove {
+  id           BigInt   @id @default(autoincrement())
+  resourceId   BigInt
+  batchId      BigInt?
+  mtype        String
+  quantity     Int
+  reason       String?
+  refType      String?
+  refId        BigInt?
+  createdById  BigInt?
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
+  resource Resource      @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  batch    MedicineBatch @relation(fields: [batchId], references: [id])
+  createdBy User?        @relation(fields: [createdById], references: [id])
+
+  @@index([resourceId, createdAt])
+  @@index([batchId])
+}
+
+model BedAllocation {
+  id         BigInt        @id @default(autoincrement())
+  bedId      BigInt
+  patientId  BigInt
+  startAt    DateTime       @db.Timestamptz(6)
+  endAt      DateTime       @db.Timestamptz(6)
+  status     BedAllocStatus
+  appointmentId BigInt?
+
+  bed       Resource    @relation(fields: [bedId], references: [id], onDelete: Cascade)
+  patient   User        @relation(fields: [patientId], references: [id])
+  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+
+  @@index([bedId, startAt])
+  @@index([patientId, startAt])
+  @@index([status])
+}
+
+model Invoice {
+  id                BigInt   @id @default(autoincrement())
+  patientId         BigInt
+  appointmentId     BigInt?
+  status            InvoiceStatus
+  totalAmountCents  Int       @default(0)
+  currency          String    @db.VarChar(3)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+
+  patient     User        @relation(fields: [patientId], references: [id])
+  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+  items       InvoiceItem[]
+  txns        Transaction[]
+
+  @@index([patientId, status])
+}
+
+model InvoiceItem {
+  id               BigInt @id @default(autoincrement())
+  invoiceId        BigInt
+  description      String
+  qty              Int     @default(1)
+  unitAmountCents  Int     @default(0)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model Transaction {
+  id          BigInt          @id @default(autoincrement())
+  invoiceId   BigInt
+  ttype       TransactionType
+  method      PaymentMethod?
+  amountCents Int
+  txnRef      String?
+  postedAt    DateTime         @default(now()) @db.Timestamptz(6)
+  status      String           @default("POSTED")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+  @@index([invoiceId, postedAt])
+}
+
+model Notification {
+  id                BigInt   @id @default(autoincrement())
+  recipientUserId   BigInt
+  channel           NotificationChannel
+  templateCode      String
+  payload           Json     @db.JsonB
+  scheduledFor      DateTime? @db.Timestamptz(6)
+  sentAt            DateTime? @db.Timestamptz(6)
+  status            String    @default("QUEUED")
+  providerMessageId String?
+
+  recipient User @relation(fields: [recipientUserId], references: [id])
+  @@index([recipientUserId, status])
+  @@index([scheduledFor])
+}
+
+model Alert {
+  id             BigInt   @id @default(autoincrement())
+  atype          AlertType
+  severity       Severity
+  message        String
+  context        Json      @db.JsonB
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  acknowledgedBy BigInt?
+  acknowledgedAt DateTime? @db.Timestamptz(6)
+
+  ackBy User? @relation("ackBy", fields: [acknowledgedBy], references: [id])
+  @@index([atype, severity, createdAt])
+  @@index([acknowledgedBy])
+}
+
+model AuditLog {
+  id           BigInt   @id @default(autoincrement())
+  actorUserId  BigInt?
+  action       String
+  entityType   String
+  entityId     BigInt
+  beforeState  Json?    @db.JsonB
+  afterState   Json?    @db.JsonB
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  ip           String?  @db.Inet
+
+  actor User? @relation("actor", fields: [actorUserId], references: [id])
+  @@index([actorUserId, createdAt])
+}
+
+model RefreshToken {
+  id          BigInt   @id @default(autoincrement())
+  userId      BigInt
+  tokenHash   String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt   DateTime @db.Timestamptz(6)
+  revokedAt   DateTime? @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, expiresAt])
+}
