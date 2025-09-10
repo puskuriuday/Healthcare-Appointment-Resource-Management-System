@@ -1,5 +1,5 @@
 export interface User {
-  id: number
+  id: string
   email: string
   role: 'PATIENT' | 'DOCTOR' | 'ADMIN'
   status: string
@@ -11,7 +11,9 @@ export interface LoginRequest {
 }
 
 export interface LoginResponse {
-  accessToken: string
+  user: User
+  access: string
+  refresh: string
 }
 
 export interface Appointment {
